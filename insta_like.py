@@ -10,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 import getpass
 import json
+import optparse
 import os
 import random
 import re
@@ -20,17 +21,17 @@ import time
 count_limit = 60
 
 
-def load_instagram(username = ''):
+def load_instagram(username = None):
     """
     Load selenium driver and log into your Instagram account
     """
     driver = webdriver.Chrome()
-    driver.set_window_size(800,800)
-    driver.set_window_position(600, 0)
+    driver.set_window_size(400,400)
+    driver.set_window_position(400,0)
     driver.get('https://www.instagram.com/accounts/login')
 
-    if username:
-        password = getpass.getpass('Password: ')
+    if username is not None:
+        password = getpass.getpass('Password: ').rstrip()
         username_field = driver.find_element_by_name('username')
         password_field = driver.find_element_by_name('password')
         actions = ActionChains(driver).click(username_field).send_keys(username).click(password_field).send_keys(password).send_keys(Keys.RETURN)
@@ -48,50 +49,51 @@ def load_instagram(username = ''):
         return _, False
 
 
-def worker(driver, tags, N = 10, ntag = 10, thresh = 2, sliding_window = 3600.0, top_posts = True,
-           window_counter = 1, visit_history = []):
+def worker(driver, tags, num_loops, num_tags, thresh, top_posts,
+           sliding_window = 3600.0, window_counter = 1, visit_history = []):
     """
     """
     start_time = time.time()
     like_count, iloop = 0, 0
     # print('App start time: ' + str(start_time))
-    while iloop < N:
+
+    while iloop < num_loops:
         # Skip the sleep on the first run (duh)
         if iloop != 0: time.sleep(600.0 - ((time.time() - start_time) % 600.0))
-        # print('Starting 10-min loop #{}/{}'.format(*map(str, (iloop + 1, N))))
+        print('Starting 10-min loop #{}/{}'.format(*map(str, (iloop + 1, num_loops))))
         random.shuffle(tags)
 
-        # Loop over ntag shuffled tags at a time
-        for tag in tags[:ntag]:
+        for tag in tags[:num_tags]:
             if (time.time() - start_time) > sliding_window * window_counter:
                 window_counter += 1  # TO-DO: change this to mod (%)
                 like_count = 0  # one-hour window expired, so reset the like_count
-            tag_url = 'https://www.instagram.com/explore/tags/%s' % tag
-            # print('Current tag: ' + tag)
-            driver.get(tag_url)
+
+            print("Now exploring #{}".format(tag))
+            driver.get("https://www.instagram.com/explore/tags/{}".format(tag))
             WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.CLASS_NAME, '_totu9'))
             )
-            like_count, visit_history, flag = like_post_by_tag(driver, tag, thresh, like_count, visit_history, top_posts)
+
+            like_count, visit_history, flag = like_post_by_tag(driver, tag, thresh, like_count, top_posts, visit_history)
             driver.implicitly_wait(1)
 
         if flag:
             elapsed = ((time.time() - start_time) % sliding_window)
-            # print('WARNING: Rate limit reached. Sleeping for ' + str(sliding_window - elapsed) + ' seconds.')
+            print("WARNING: Rate limit reached. Sleeping for {} seconds.".format(str(sliding_window - elapsed)))
             time.sleep(sliding_window - elapsed)
         else:
-            # print('Like count is ' + str(like_count) + ' in this one-hour sliding window.')
+            print("Like count is {} in this one-hour sliding window.".format(str(like_count)))
+
         iloop += 1
 
     return like_count, visit_history
 
 
-def like_post_by_tag(driver, tag, thresh, like_count, visit_history, top_posts):
+def like_post_by_tag(driver, tag, thresh, like_count, top_posts, visit_history):
     """
     Like likable photos by hashtag
-    Likable photo defined here is the photo with engagements per minute > threshold
+    Likable photo defined here is the photo with engagements per minute > threshold ratio
     """
-    # print('Quality threshold is ' + str(thresh))
     try:
         loadmore_class = ['8imhp', 'oidfu']  # Two possible Load More as of February 2017
         element = next((driver.find_element_by_css_selector('a._%s' % c) for c in loadmore_class))
@@ -122,7 +124,7 @@ def like_post_by_tag(driver, tag, thresh, like_count, visit_history, top_posts):
             engagement_count = photo['likes']['count'] + photo['comments']['count']
             elapsed = (now - photo['date']) / 60.  # in min
             is_likable = engagement_count / elapsed > thresh
-            if is_photo and is_likable:
+            if is_photo and is_likable and engagement_count > 10:
                 likable_photos.append(photo.get('code'))
 
         limit_reached, li = False, 0
@@ -148,11 +150,11 @@ def like_post_by_tag(driver, tag, thresh, like_count, visit_history, top_posts):
     return like_count, visit_history, limit_reached
 
 
-def load_tags(filename = ''):
+def load_tags(filename = None):
     """
     parse hastag text files
     """
-    if filename:
+    if filename is not None:
         with open(filename, 'r') as f:
             raw_lines = f.readlines()
         tags_text = ' '.join([l for l in raw_lines if '#' in l])
@@ -177,10 +179,29 @@ def gen_dict_extract(key, var):
                         yield result
 
 
-if __name__ == '__main__':
+def main():
+    parser = optparse.OptionParser()
+    parser.add_option('-U', '--username', dest='username')
+    parser.add_option('-n', '--num-tags', dest='num_tags', type='int',
+                      help="Number of hashtags to explore in each loop")
+    parser.add_option('-N', '--num-loops', dest='num_loops', type='int', help="Number of loop")
+    parser.add_option('-I', '--input', dest='filename', help='Full input file path')
+    parser.add_option('-r', '--ratio', dest='ratio', type='float')
+    parser.add_option('-t', '--top-posts', dest='top_posts', action='store_true', default=False)
+    options, remainder = parser.parse_args()
 
-    driver, login_success = load_instagram()
-    # tags  = load_tags('hashtags.txt')
-    tags  = load_tags()
+    tags = load_tags(options.filename)
+    driver, login_success = load_instagram(options.username)
     if login_success:
-        like_count, visit_history = worker(driver = driver, tags = tags, top_posts = False)
+        like_count, visit_history = worker(
+            driver = driver, tags = tags,
+            num_loops = options.num_loops if options.num_loops else 10,
+            num_tags = options.num_tags,
+            thresh = options.ratio if options.ratio else 4,
+            top_posts = options.top_posts
+        )
+
+    driver.quit()
+
+if __name__ == '__main__':
+    main()
